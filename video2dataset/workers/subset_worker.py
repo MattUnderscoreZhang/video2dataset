@@ -1,14 +1,15 @@
 """creates a subset of an existing dataset inside the sample dimension"""
 from dataclasses import dataclass, field
-import time
-import json
-import pyarrow as pa
-import traceback
-
+import ffmpeg
+from ffmpeg.nodes import Stream
 import fsspec
+import json
 import numpy as np
+import pyarrow as pa
+import time
+import traceback
+from typing import List, Tuple, Any, Optional, Literal, cast
 import webdataset as wds
-from typing import List, Any, Union, Optional, Literal, cast
 
 from video2dataset.dataloader import get_video_dataset
 from video2dataset.logger import CappedCounter, write_stats
@@ -20,14 +21,15 @@ from video2dataset.subsamplers import (
     NoOpSubsampler,
     ResolutionSubsampler,
     AudioRateSubsampler,
+    Subsampler,
 )
 from video2dataset.types import EncodeFormats, Streams
 
 
-def get_subsamplers(config: dict, encode_formats: EncodeFormats):
+def get_subsamplers(config: dict, input_encode_formats: EncodeFormats) -> Tuple[List[Subsampler], EncodeFormats]:
     clipping_subsampler = ClippingSubsampler(
-        5,  # oom_clip_count
-        encode_formats,
+        oom_clip_count=5,
+        encode_formats=input_encode_formats,
         **config["subsampling"].get("ClippingSubsampler", {"args": {}})["args"],
     )
     need_keyframes = clipping_subsampler.precision == "keyframe_adjusted"
@@ -49,18 +51,39 @@ def get_subsamplers(config: dict, encode_formats: EncodeFormats):
         ffprobe_subsampler.extract_keyframes |= need_keyframes
 
     video_subsamplers: List[Any] = []
-    if "ResolutionSubsampler" in config["subsampling"]:
-        video_subsamplers.append(ResolutionSubsampler(**config["subsampling"]["ResolutionSubsampler"]["args"]))
     if "FrameSubsampler" in config["subsampling"]:
         video_subsamplers.append(FrameSubsampler(**config["subsampling"]["FrameSubsampler"]["args"]))
+    if "ResolutionSubsampler" in config["subsampling"]:
+        video_subsamplers.append(ResolutionSubsampler(**config["subsampling"]["ResolutionSubsampler"]["args"]))
 
     audio_subsamplers: List[Any] = []
     if "AudioRateSubsampler" in config["subsampling"]:
         audio_subsamplers.append(AudioRateSubsampler(**config["subsampling"]["AudioRateSubsampler"]["args"]))
 
-    modal_subsamplers = {"video": video_subsamplers, "audio": audio_subsamplers}
+    # calculate output encoding
+    output_encode_formats = input_encode_formats.copy()
+    if len(video_subsamplers) > 0:
+        assert (
+            len({s.encode_format for s in video_subsamplers}) == 1
+        )  # assert that all video subsamplers have the same output format
+        output_encode_formats["video"] = video_subsamplers[0].encode_format
+    if len(audio_subsamplers) > 0:
+        assert (
+            len({s.encode_format for s in audio_subsamplers}) == 1
+        )  # assert that all audio subsamplers have the same output format
+        output_encode_formats["audio"] = audio_subsamplers[0].encode_format
 
-    return ffprobe_subsampler, modal_subsamplers, cut_detection_subsampler, cuts_are_clips, broadcast_subsampler
+    return [
+        subsampler
+        for subsampler in [
+            ffprobe_subsampler,
+            *video_subsamplers,
+            *audio_subsamplers,
+            cut_detection_subsampler,
+            broadcast_subsampler,
+        ]
+        if subsampler is not None
+    ], output_encode_formats
 
 
 @dataclass
@@ -85,27 +108,8 @@ class SubsetWorker:
         self.sample_writer_class = sample_writer_class
         self.output_folder = output_folder
         self.config = config
-        (
-            self.ffprobe_subsampler,
-            self.modal_subsamplers,
-            self.cut_detection_subsampler,
-            self.cuts_are_clips,
-            self.broadcast_subsampler,
-        ) = get_subsamplers(config, encode_formats)
-
-        # set encoding formats
         self.input_encode_formats = encode_formats
-        self.output_encode_formats = self.input_encode_formats.copy()
-        if self.modal_subsamplers["audio"]:
-            assert (
-                len({s.encode_format for s in self.modal_subsamplers["audio"]}) == 1
-            )  # assert that all audio subsamplers have the same output format
-            self.output_encode_formats["audio"] = self.modal_subsamplers["audio"][0].encode_format
-        if self.modal_subsamplers["video"]:
-            assert (
-                len({s.encode_format for s in self.modal_subsamplers["video"]}) == 1
-            )  # assert that all video subsamplers have the same output format
-            self.output_encode_formats["video"] = self.modal_subsamplers["video"][0].encode_format
+        self.subsamplers, self.output_encode_formats = get_subsamplers(config, encode_formats)
 
     def __call__(
         self,
@@ -170,37 +174,44 @@ class SubsetWorker:
             key = sample["__key__"]
             try:
                 caption = sample.get("txt", b"").decode("utf-8")
-                meta = json.loads(sample.get("json", b"{}").decode("utf-8"))
+                metadata = json.loads(sample.get("json", b"{}").decode("utf-8"))
+                stream_node: Stream = ffmpeg.input(sample)
             except Exception as err:  # pylint: disable=broad-except
                 traceback.print_exc()
                 print(f"Sample {key} failed to download: {err}")
                 return
 
             try:
-                streams: Streams = {}
-                for modality, format in self.input_encode_formats.items():
-                    modality = cast(Literal["audio", "video"], modality)
-                    streams[modality] = [sample[format]]
+                metadata["video_metadata"] = video_metadata
 
+                for subsampler in self.subsamplers:
+                    stream_node, metadata = subsampler(stream_node, metadata)
+                stream_node.run(capture_stdout=True, capture_stderr=True)
+
+                shard_status.successes += 1
+                status = "success"
+                shard_status.status_dict.increment(status)
+
+                """
                 if self.ffprobe_subsampler is not None:
-                    streams, meta, shard_status.error_message = self.ffprobe_subsampler(streams, meta)
+                    streams, metadata, shard_status.error_message = self.ffprobe_subsampler(streams, metadata)
                     assert shard_status.error_message is None
 
                 if self.config["storage"]["captions_are_subtitles"]:  # create clips
-                    subtitles = meta["yt_meta_dict"]["subtitles"]
-                    meta["clips"] = [[line_dict["start"], line_dict["end"]] for line_dict in subtitles]
+                    subtitles = metadata["yt_meta_dict"]["subtitles"]
+                    metadata["clips"] = [[line_dict["start"], line_dict["end"]] for line_dict in subtitles]
                 elif self.cut_detection_subsampler is not None:  # apply cut detection to get clips
                     streams, cuts, shard_status.error_message = self.cut_detection_subsampler(streams)
                     assert shard_status.error_message is None
-                    meta["cuts"] = cuts
+                    metadata["cuts"] = cuts
                     assert cuts is not None
                     if self.cuts_are_clips:
-                        meta["clips"] = (np.array(cuts["cuts_original_fps"]) / cuts["original_fps"]).tolist()
+                        metadata["clips"] = (np.array(cuts["cuts_original_fps"]) / cuts["original_fps"]).tolist()
 
                 # 1 video -> many videos (either clipping or noop which does identity broadcasting)
-                subsampled_streams, metas, shard_status.error_message = self.broadcast_subsampler(streams, meta)
+                subsampled_streams, metas, shard_status.error_message = self.broadcast_subsampler(streams, metadata)
                 if shard_status.error_message is not None:
-                    meta["clips"] = []
+                    metadata["clips"] = []
                     assert False
 
                 for modality in list(subsampled_streams.keys()):
@@ -210,41 +221,38 @@ class SubsetWorker:
                         )
                         assert shard_status.error_message is None
 
-                shard_status.successes += 1
-                status = "success"
-                shard_status.status_dict.increment(status)
-
                 subsampled_streams_list = [dict(zip(subsampled_streams, s)) for s in zip(*subsampled_streams.values())]
-                if len(subsampled_streams_list) == 0:  # no audio or video, just write meta
-                    meta["status"] = status
+                if len(subsampled_streams_list) == 0:  # no audio or video, just write metadata
+                    metadata["status"] = status
                     shard_sample_writer.write(
                         {},
                         key,
                         caption,
-                        meta,
+                        metadata,
                     )
                     continue
-                for subsampled_streams, meta in zip(subsampled_streams_list, metas):
-                    meta["status"] = status
+                for subsampled_streams, metadata in zip(subsampled_streams_list, metas):
+                    metadata["status"] = status
                     text_caption = caption
                     if self.config["storage"]["captions_are_subtitles"]:
-                        text_caption = meta.get("clip_subtitles")[0]["lines"][0]
+                        text_caption = metadata.get("clip_subtitles")[0]["lines"][0]
                     shard_sample_writer.write(
                         subsampled_streams,
-                        meta["key"],
+                        metadata["key"],
                         text_caption,
-                        meta,
+                        metadata,
                     )
+                """
             except Exception:  # pylint: disable=broad-except
                 shard_status.failed_to_subsample += 1
                 shard_status.status_dict.increment(shard_status.error_message)
-                meta["status"] = "failed_to_subsample"
-                meta["error_message"] = shard_status.error_message
+                metadata["status"] = "failed_to_subsample"
+                metadata["error_message"] = shard_status.error_message
                 shard_sample_writer.write(
                     {},
                     key,
                     caption,
-                    meta,
+                    metadata,
                 )
 
         shard_sample_writer.close()
