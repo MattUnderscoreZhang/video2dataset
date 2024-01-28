@@ -5,7 +5,7 @@ import numpy as np
 from scenedetect import ContentDetector, SceneManager, open_video
 from typing import Tuple, List, Optional, Literal
 
-from video2dataset.subsamplers.subsampler import Subsampler
+from video2dataset.subsamplers.subsampler import Probe
 from video2dataset.types import Metadata, Error
 
 # TODO: this can be done more elegantly:
@@ -31,7 +31,7 @@ def get_scenes_from_scene_manager(scene_manager, cut_detection_mode):
     return scene
 
 
-class CutDetectionSubsampler(Subsampler):
+class CutDetectionSubsampler(Probe):
     """
     Detects cuts in input videos and returns contiguous segments in a video as metadata.
 

@@ -3,14 +3,14 @@ Transform video and audio by reducing fps, extracting videos, changing resolutio
 """
 
 from .audio_rate_subsampler import AudioRateSubsampler
-from .clipping_subsampler import ClippingSubsampler, _get_seconds, _split_time_frame, Streams
-from .frame_subsampler import FrameSubsampler
-from .ffprobe_subsampler import FFProbeSubsampler
-from .noop_subsampler import NoOpSubsampler
-from .resolution_subsampler import ResolutionSubsampler
-from .cut_detection_subsampler import CutDetectionSubsampler
-from .optical_flow_subsampler import OpticalFlowSubsampler
-from .whisper_subsampler import WhisperSubsampler
 from .caption_subsampler import CaptionSubsampler
+from .clipping_subsampler import ClippingSubsampler, _get_seconds, _split_time_frame, Streams
+from .cut_detection_subsampler import CutDetectionSubsampler
+from .ffprobe_subsampler import FFProbeSubsampler
+from .frame_subsampler import FrameSubsampler
+from .noop_subsampler import NoOpSubsampler
+from .optical_flow_subsampler import OpticalFlowSubsampler
+from .resolution_subsampler import ResolutionSubsampler
+from .whisper_subsampler import WhisperSubsampler
 
-from .subsampler import Subsampler
+from .subsampler import Subsampler, Probe

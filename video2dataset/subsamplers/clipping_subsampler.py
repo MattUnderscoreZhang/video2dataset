@@ -208,6 +208,14 @@ def _get_clips(
     else:
         ffmpeg_kwargs["c"] = "copy"
 
+    clip_metadata = _get_clip_metadata(
+        clip_spans=clip_spans,
+        clip_idxs=clip_idxs,
+        metadata=metadata,
+        oom_clip_count=oom_clip_count,
+        strtime_formatting=strtime_formatting,
+    )
+
     clips: Dict[str, List[bytes]] = {}
     for k in streams.keys():
         k = cast(Literal["audio", "video"], k)
@@ -230,14 +238,6 @@ def _get_clips(
                 with open(stream_clips[clip_idx], "rb") as vid_f:
                     clip_bytes = vid_f.read()
                     clips[k].append(clip_bytes)
-
-    clip_metadata = _get_clip_metadata(
-        clip_spans=clip_spans,
-        clip_idxs=clip_idxs,
-        metadata=metadata,
-        oom_clip_count=oom_clip_count,
-        strtime_formatting=strtime_formatting,
-    )
 
     return clips, clip_metadata
 

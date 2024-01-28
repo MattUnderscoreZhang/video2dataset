@@ -3,12 +3,12 @@ import json
 import subprocess
 from typing import Tuple, Optional
 
-from video2dataset.subsamplers.subsampler import Subsampler
+from video2dataset.subsamplers.subsampler import Probe
 from video2dataset.types import Metadata, Error
 
 
 # TODO: figuer out why this is so slow (12 samples/s)
-class FFProbeSubsampler(Subsampler):
+class FFProbeSubsampler(Probe):
     """
     Extracts metadata from bytes.
     Args:
