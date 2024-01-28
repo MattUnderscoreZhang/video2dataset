@@ -7,7 +7,7 @@ import copy
 import ffmpeg
 
 from .subsampler import Subsampler
-from .clipping_subsampler import _get_seconds
+from .clipping_subsampler import _convert_time_str_to_float
 
 
 class FrameSubsampler(Subsampler):
@@ -59,7 +59,7 @@ class FrameSubsampler(Subsampler):
                         ext = "jpg"
                     elif self.downsample_method == "yt_subtitle":
                         subtitles = metadata[i]["yt_meta_dict"]["subtitles"]
-                        starts = [_get_seconds(s["start"]) for s in subtitles]
+                        starts = [_convert_time_str_to_float(s["start"]) for s in subtitles]
 
                         for frame_id, start_t in enumerate(starts):
                             frame_key = f"{frame_id:04d}"

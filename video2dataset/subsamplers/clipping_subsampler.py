@@ -1,24 +1,28 @@
 """
 clipping subsampler turns full videos into clips of videos according to clip_col
 """
-from collections.abc import Iterable
 import copy
 import datetime
 import ffmpeg
 import glob
 import os
 import tempfile
-from typing import Any, Union, List, Tuple, Dict, Literal, cast
+from typing import Any, List, Tuple, Dict, Literal, Union, Optional, cast
 
 from video2dataset.subsamplers.subsampler import Subsampler
-from video2dataset.types import EncodeFormats, Streams
+from video2dataset.types import EncodeFormats, Streams, Metadata, Error
+
+
+################################
+# HELPER FUNCTIONS AND CLASSES #
+################################
 
 
 ClipSpan = List[float]  # [start, end]
 
 
-def _get_seconds(t: Union[str, float]) -> float:
-    """Converts time to seconds"""
+def _convert_time_str_to_float(t: Union[str, float]) -> float:
+    """Converts time from string to seconds"""
     if not isinstance(t, str):
         return float(t)  # already seconds
     time_format = "%H:%M:%S.%f"  # TODO: maybe parameterize this?
@@ -26,8 +30,8 @@ def _get_seconds(t: Union[str, float]) -> float:
     return t_obj.second + t_obj.microsecond / 1e6 + t_obj.minute * 60 + t_obj.hour * 3600
 
 
-def _get_strtime(t_sec: float) -> str:
-    """Converts time to string"""
+def _convert_time_float_to_str(t_sec: float) -> str:
+    """Converts time from seconds to string"""
     hour = int(t_sec // 3600)
     minute = int((t_sec // 60) % 60)
     second = int(t_sec % 60)
@@ -36,8 +40,25 @@ def _get_strtime(t_sec: float) -> str:
     return f"{hour:02d}:{minute:02d}:{second:02d}.{microsecond:03d}"
 
 
-def _split_time_frame(s: float, e: float, min_length: float, max_length: float) -> List[ClipSpan]:
-    """Filters out cuts by min and max length"""
+#############################
+# FIND CLIP SPLITTING TIMES #
+#############################
+
+
+def _shorten_clip_to_keyframes(clip_span: ClipSpan, keyframes: List[float]) -> Optional[ClipSpan]:
+    """Shorten clip to span from first to last keyframe"""
+    start, end = clip_span
+    keyframes_in_range = [k for k in keyframes if start <= k <= end]
+    if keyframes_in_range:
+        adjusted_start = min(keyframes_in_range)
+        adjusted_end = max(keyframes_in_range)
+        if adjusted_start != adjusted_end:
+            return [adjusted_start, adjusted_end]
+    return None
+
+
+def _split_clip_into_segments(s: float, e: float, min_length: float, max_length: float) -> List[ClipSpan]:
+    """Splits clip into as many clips of max length as possible, followed by up to one clip of greater than min length"""
     time_d = e - s
     n_full_clips = int(time_d // max_length)
     clip_spans = [[s + i * max_length, s + (i + 1) * max_length] for i in range(n_full_clips)] + (
@@ -46,45 +67,12 @@ def _split_time_frame(s: float, e: float, min_length: float, max_length: float) 
     return clip_spans
 
 
-def _adjust_clip_spans_to_keyframes(clip_spans: List[ClipSpan], keyframes: List[float]) -> List[ClipSpan]:
-    """Translates clip_spans into keyframe vocab"""
-    adjusted_clip_spans = []
-    for start, end in clip_spans:
-        keyframes_in_range = [k for k in keyframes if start <= k <= end]
-        if keyframes_in_range:
-            adjusted_start = min(keyframes_in_range)
-            adjusted_end = max(keyframes_in_range)
-            if adjusted_start != adjusted_end:
-                adjusted_clip_spans.append([adjusted_start, adjusted_end])
-    return adjusted_clip_spans
-
-
-def _adjust_clip_spans(
-    clip_spans: List[ClipSpan],
-    keyframe_timestamps: Union[List[float], None],
-    min_length: float,
-    max_length: float,
-    max_length_strategy: str,
-) -> List[ClipSpan]:
-    """Adjusts cut times around keyframes, filtering by min and max length"""
-    if not isinstance(clip_spans[0], Iterable):  # make sure clip_spans looks like [[start, end]] and not [start, end]
-        clip_spans = cast(List[ClipSpan], [clip_spans])
-    clip_spans = [[_get_seconds(s), _get_seconds(e)] for [s, e] in clip_spans]
-
-    if keyframe_timestamps:
-        clip_spans = _adjust_clip_spans_to_keyframes(clip_spans, keyframe_timestamps)
-
-    filtered_clip_spans = []
-    for s, e in clip_spans:
-        max_len_clip_spans = _split_time_frame(s, e, min_length, max_length)
-        if max_length_strategy == "first":
-            max_len_clip_spans = max_len_clip_spans[:1]
-        filtered_clip_spans += max_len_clip_spans
-    return filtered_clip_spans
-
-
-def _collate_clip_spans(clip_spans: List[ClipSpan]) -> Tuple[str, List[int]]:
-    """Collates clip spans into a single string for ffmpeg and a list of clip idxs"""
+def _combine_clip_splitting_data(clip_spans: List[ClipSpan]) -> Tuple[str, List[int]]:
+    """
+    Collates clip spans into a single string for ffmpeg and a list of clip idxs.
+    e.g. '0.0,1.0,3.5,5.0' -> [0, 2].
+    This example would indicate valid clips from [0.0, 1.0] and [3.5, 5.0].
+    """
     clip_times = []
     clip_idxs = []
     e_prev = 0.0
@@ -103,6 +91,104 @@ def _collate_clip_spans(clip_spans: List[ClipSpan]) -> Tuple[str, List[int]]:
 
     clip_times_str = ",".join([str(time) for time in clip_times])
     return clip_times_str, clip_idxs
+
+
+def _get_clip_splitting_data(
+    original_clip_spans: List[ClipSpan],
+    keyframe_timestamps: Union[List[float], None],
+    min_length: float,
+    max_length: float,
+    max_length_strategy: str,
+) -> Tuple[List[ClipSpan], str, List[int]]:
+    """
+    Splits clips into segments of the requested lengths, using keyframes if available.
+    """
+    shortened_clip_spans = (
+        [
+            shortened_clip
+            for clip_span in original_clip_spans
+            if (shortened_clip := _shorten_clip_to_keyframes(clip_span, keyframe_timestamps)) is not None
+        ]
+        if keyframe_timestamps
+        else original_clip_spans
+    )
+
+    split_clip_spans = []
+    for s, e in shortened_clip_spans:
+        split_clip_spans = _split_clip_into_segments(s, e, min_length, max_length)
+        if max_length_strategy == "first":
+            split_clip_spans = split_clip_spans[:1]
+        split_clip_spans += split_clip_spans
+
+    clip_times, clip_idxs = _combine_clip_splitting_data(split_clip_spans)
+
+    return split_clip_spans, clip_times, clip_idxs
+
+
+####################
+# EXTRACT METADATA #
+####################
+
+
+def _get_subtitles(clip_span: ClipSpan, meta_clip: Metadata) -> List[Metadata]:
+    """Extracts subtitles and groups them by language"""
+    clip_subtitles: List[dict] = []
+    s_c, e_c = clip_span
+    for lang_id, (lang, subtitles) in enumerate(meta_clip["yt_meta_dict"]["subtitles"].items()):
+        idx = 0
+        for line in subtitles:
+            line_dict = {lang: line["lines"]}
+            s, e = _convert_time_str_to_float(line["start"]), _convert_time_str_to_float(line["end"])
+            if max(s_c, s) < min(e_c, e):
+                if lang_id != 0:
+                    clip_subtitles[idx]["lines"].update(line_dict)
+                    idx += 1
+                else:
+                    temp_line = copy.deepcopy(line)
+                    temp_line["lines"] = line_dict
+                    clip_subtitles.append(temp_line)
+            elif s > e_c:
+                break
+    return clip_subtitles
+
+
+def _get_clip_metadatas(
+    clip_spans: List[ClipSpan],
+    clip_idxs: List[int],
+    metadata: Metadata,
+    oom_clip_count: int,
+    strtime_formatting: bool,
+) -> List[Metadata]:
+    """Gets metadata for each clip"""
+    metadata_clips = []
+    for clip_id, (clip_span, _) in enumerate(zip(clip_spans, clip_idxs)):
+        clip_key = "{clip_id:0{oom_clip_count}d}".format(  # pylint: disable=consider-using-f-string
+            clip_id=clip_id, oom_clip_count=oom_clip_count
+        )
+        meta_clip = copy.deepcopy(metadata)
+        # set the timeframe of this clip
+        if strtime_formatting:
+            #  Keep clip_spans in the original format to be compatible with the data schema.
+            meta_clip["clips"] = [(_convert_time_float_to_str(clip_span[0]), _convert_time_float_to_str(clip_span[1]))]
+        else:
+            meta_clip["clips"] = [clip_span]
+        meta_clip["key"] = f"{meta_clip['key']}_{clip_key}"
+
+        yt_md_dict = meta_clip.get("yt_meta_dict", {})
+        if (yt_md_dict is not None) and (yt_md_dict.get("subtitles", None) is not None):
+            meta_clip["clip_subtitles"] = _get_subtitles(clip_span, meta_clip)
+        metadata_clips.append(meta_clip)
+
+    # remove redundant metadata from clips after the first
+    for m_clips in metadata_clips[1:]:
+        m_clips["yt_meta_dict"] = {}
+
+    return metadata_clips
+
+
+###############
+# SPLIT CLIPS #
+###############
 
 
 def _process_stream(
@@ -129,74 +215,14 @@ def _process_stream(
     return stream_clips
 
 
-def _extract_subtitles(clip_span: ClipSpan, meta_clip: dict) -> List[dict]:
-    """Extracts subtitles and groups them by language"""
-    clip_subtitles: List[dict] = []
-    s_c, e_c = _get_seconds(clip_span[0]), _get_seconds(clip_span[1])
-    for lang_id, (lang, subtitles) in enumerate(meta_clip["yt_meta_dict"]["subtitles"].items()):
-        idx = 0
-        for line in subtitles:
-            line_dict = {lang: line["lines"]}
-            s, e = _get_seconds(line["start"]), _get_seconds(line["end"])
-            if max(s_c, s) < min(e_c, e):
-                if lang_id != 0:
-                    clip_subtitles[idx]["lines"].update(line_dict)
-                    idx += 1
-                else:
-                    temp_line = copy.deepcopy(line)
-                    temp_line["lines"] = line_dict
-                    clip_subtitles.append(temp_line)
-            elif s > e_c:
-                break
-    return clip_subtitles
-
-
-def _get_clip_metadata(
-    clip_spans: List[ClipSpan],
-    clip_idxs: List[int],
-    metadata: dict,
-    oom_clip_count: int,
-    strtime_formatting: bool,
-) -> List[dict]:
-    """Gets metadata for each clip"""
-    metadata_clips = []
-    for clip_id, (clip_span, _) in enumerate(zip(clip_spans, clip_idxs)):
-        clip_key = "{clip_id:0{oom_clip_count}d}".format(  # pylint: disable=consider-using-f-string
-            clip_id=clip_id, oom_clip_count=oom_clip_count
-        )
-        meta_clip = copy.deepcopy(metadata)
-        # set the timeframe of this clip
-        if strtime_formatting:
-            #  Keep clip_spans in the original format to be compatible with the data schema.
-            meta_clip["clips"] = [(_get_strtime(clip_span[0]), _get_strtime(clip_span[1]))]
-        else:
-            meta_clip["clips"] = [clip_span]
-        meta_clip["key"] = f"{meta_clip['key']}_{clip_key}"
-
-        yt_md_dict = meta_clip.get("yt_meta_dict", {})
-        if (yt_md_dict is not None) and (yt_md_dict.get("subtitles", None) is not None):
-            meta_clip["clip_subtitles"] = _extract_subtitles(clip_span, meta_clip)
-        metadata_clips.append(meta_clip)
-
-    # remove redundant metadata from clips after the first
-    for m_clips in metadata_clips[1:]:
-        m_clips["yt_meta_dict"] = {}
-
-    return metadata_clips
-
-
 def _get_clips(
     streams: Streams,
     encode_formats: EncodeFormats,
     precision: str,
-    clip_spans: List[ClipSpan],
-    metadata: dict,
-    oom_clip_count: int,
-    strtime_formatting: bool,
-) -> Tuple[Dict[str, List[bytes]], List[dict]]:
+    clip_times: str,
+    clip_idxs: List[int],
+) -> Streams:
     """Gets clips from streams"""
-    clip_times, clip_idxs = _collate_clip_spans(clip_spans)
-
     ffmpeg_kwargs = {
         "map": 0,
         "f": "segment",
@@ -208,15 +234,7 @@ def _get_clips(
     else:
         ffmpeg_kwargs["c"] = "copy"
 
-    clip_metadata = _get_clip_metadata(
-        clip_spans=clip_spans,
-        clip_idxs=clip_idxs,
-        metadata=metadata,
-        oom_clip_count=oom_clip_count,
-        strtime_formatting=strtime_formatting,
-    )
-
-    clips: Dict[str, List[bytes]] = {}
+    clips: Streams = {}
     for k in streams.keys():
         k = cast(Literal["audio", "video"], k)
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -239,7 +257,7 @@ def _get_clips(
                     clip_bytes = vid_f.read()
                     clips[k].append(clip_bytes)
 
-    return clips, clip_metadata
+    return clips
 
 
 class ClippingSubsampler(Subsampler):
@@ -287,11 +305,14 @@ class ClippingSubsampler(Subsampler):
         self.max_length_strategy = max_length_strategy
         self.precision = precision
 
-    def __call__(self, streams: Streams, metadata: dict):
-        strtime_formatting = isinstance(metadata["clips"][0][0], str)
+    def __call__(self, streams: Streams, metadata: Metadata) -> Tuple[Streams, List[Metadata], Error]:
+        original_clip_spans = metadata.pop("clips")
 
-        clip_spans = _adjust_clip_spans(
-            clip_spans=metadata.pop("clips"),
+        clip_spans, clip_times, clip_idxs = _get_clip_splitting_data(
+            original_clip_spans=[
+                [_convert_time_str_to_float(s), _convert_time_str_to_float(e)]
+                for [s, e] in original_clip_spans
+            ],
             keyframe_timestamps=(
                 # TODO: make it so if keyframe timestamps not present, get it yourself
                 metadata["video_metadata"].pop("keyframe_timestamps")
@@ -306,16 +327,22 @@ class ClippingSubsampler(Subsampler):
             return {}, [], f"Video had no clip_spans longer than {self.min_length}"
 
         try:
-            clips, clip_metadata = _get_clips(
+            clip_metadatas = _get_clip_metadatas(
+                clip_spans=clip_spans,
+                clip_idxs=clip_idxs,
+                metadata=metadata,
+                oom_clip_count=self.oom_clip_count,
+                strtime_formatting=isinstance(original_clip_spans[0][0], str),
+            )
+            print(clip_times, clip_idxs)
+            clips = _get_clips(
                 streams=streams,
                 encode_formats=self.encode_formats,
                 precision=self.precision,
-                clip_spans=clip_spans,
-                metadata=metadata,
-                oom_clip_count=self.oom_clip_count,
-                strtime_formatting=strtime_formatting,
+                clip_times=clip_times,
+                clip_idxs=clip_idxs,
             )
         except Exception as err:  # pylint: disable=broad-except
             return {}, [], str(err)
 
-        return clips, clip_metadata, None
+        return clips, clip_metadatas, None
