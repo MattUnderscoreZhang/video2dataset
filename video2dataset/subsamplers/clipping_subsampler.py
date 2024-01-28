@@ -113,16 +113,16 @@ def _get_clip_splitting_data(
         else original_clip_spans
     )
 
-    split_clip_spans = []
+    all_split_clip_spans = []
     for s, e in shortened_clip_spans:
         split_clip_spans = _split_clip_into_segments(s, e, min_length, max_length)
         if max_length_strategy == "first":
             split_clip_spans = split_clip_spans[:1]
-        split_clip_spans += split_clip_spans
+        all_split_clip_spans += split_clip_spans
 
-    clip_times, clip_idxs = _combine_clip_splitting_data(split_clip_spans)
+    clip_times, clip_idxs = _combine_clip_splitting_data(all_split_clip_spans)
 
-    return split_clip_spans, clip_times, clip_idxs
+    return all_split_clip_spans, clip_times, clip_idxs
 
 
 ####################
@@ -334,7 +334,6 @@ class ClippingSubsampler(Subsampler):
                 oom_clip_count=self.oom_clip_count,
                 strtime_formatting=isinstance(original_clip_spans[0][0], str),
             )
-            print(clip_times, clip_idxs)
             clips = _get_clips(
                 streams=streams,
                 encode_formats=self.encode_formats,
