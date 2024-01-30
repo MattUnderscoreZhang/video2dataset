@@ -1,15 +1,15 @@
 """Base subsampler and probe class"""
 from abc import abstractmethod
-from typing import Tuple, Optional
+from typing import Tuple, List, Optional
 
-from video2dataset.types import Metadata, Error
+from video2dataset.types import Error, FFmpegStream, Metadata
 
 
 class Subsampler:
     """Subsamples input and returns in same format (stream dict + metadata)"""
 
     @abstractmethod
-    def __call__(self, streams, metadata):
+    def __call__(self, ffmpeg_stream: FFmpegStream, metadata: Metadata) -> Tuple[List[FFmpegStream], List[Metadata], Error]:
         raise NotImplementedError("Subsampler should not be called")
 
 

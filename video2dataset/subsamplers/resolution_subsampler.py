@@ -1,7 +1,7 @@
 """
 resolution subsampler adjusts the resolution of the videos to some constant value
 """
-from typing import Literal, Tuple, Optional
+from typing import Literal, Tuple
 
 from video2dataset.subsamplers.subsampler import Subsampler
 from video2dataset.types import Metadata, Error, FFmpegStream
@@ -40,7 +40,7 @@ class ResolutionSubsampler(Subsampler):
         self.video_size = video_size
         self.encode_format = encode_format
 
-    def __call__(self, ffmpeg_stream: FFmpegStream, metadata: Metadata, tmpdir: Optional[str] = None) -> Tuple[FFmpegStream, Metadata, Error]:
+    def __call__(self, ffmpeg_streams: List[FFmpegStream], metadatas: List[Metadata]) -> Tuple[List[FFmpegStream], List[Metadata], Error]:
         if "scale" in self.resize_mode:
             if self.height > 0:
                 ffmpeg_stream = ffmpeg_stream.filter("scale", -2, self.height)

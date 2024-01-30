@@ -170,12 +170,11 @@ def process_sample(
                         f.write(stream)
                     filepaths[modality].append(temp_filepath)
 
+            # add info to video metadata about keyframes and cuts
             # this is pre-broadcast, so there should only be one video
             assert "video" in filepaths
             assert len(filepaths["video"]) == 1
             video_filepath = filepaths["video"][0]
-
-            # add info about keyframes and cuts
             metadata = extract_video_metadata(
                 subsamplers=subsamplers,
                 shard_status=shard_status,
