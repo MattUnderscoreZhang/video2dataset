@@ -1,5 +1,6 @@
 """Standard worker for video2dataset."""
 from dataclasses import dataclass, field
+import ffmpeg
 import numpy as np
 import os
 import tempfile
@@ -155,7 +156,6 @@ def process_sample(
     shard_sample_writer: Any,  # TODO: type correctly
 ):
     """Process a single video"""
-
     try:
         with tempfile.TemporaryDirectory() as tmpdir:
             # save temp stream dumps
@@ -185,23 +185,27 @@ def process_sample(
             )
 
             # 1 video -> many videos (either clipping or noop which does identity broadcasting)
-            subsampled_filepaths, metadatas, shard_status.error_message = subsamplers.broadcast_subsampler(filepaths, metadata)
+            subsample_filepaths, subsample_metadatas, shard_status.error_message = subsamplers.broadcast_subsampler(filepaths, metadata)
             if shard_status.error_message is not None:
                 metadata["clips"] = []
                 assert False
 
-            for modality in list(subsampled_filepaths.keys()):
-                for modality_subsampler in subsamplers.modal_subsamplers[modality]:
-                    subsampled_filepaths, metadatas, shard_status.error_message = modality_subsampler(
-                        subsampled_filepaths, metadatas
-                    )
-                    assert shard_status.error_message is None
+            # create ffmpeg process for each file, then run to generate output file
+            for modality in list(subsample_filepaths.keys()):
+                for subsample_filepath, subsample_metadata in zip(subsample_filepaths[modality], subsample_metadatas):
+                    ffmpeg_stream = ffmpeg.input(subsample_filepath)
+                    for modality_subsampler in subsamplers.modal_subsamplers[modality]:
+                        ffmpeg_stream, subsample_metadata, shard_status.error_message = modality_subsampler(
+                            ffmpeg_stream, subsample_metadata, tmpdir,
+                        )
+                        assert shard_status.error_message is None
+                    ffmpeg_stream.run(capture_stdout=True, quiet=True)
 
             shard_status.successes += 1
             shard_status.status_dict.increment("success")
 
-            subsampled_filepaths_list = [dict(zip(subsampled_filepaths, s)) for s in zip(*subsampled_filepaths.values())]
-            if len(subsampled_filepaths_list) == 0:  # no audio or video, just write metadata
+            subsample_filepaths_list = [dict(zip(subsample_filepaths, s)) for s in zip(*subsample_filepaths.values())]
+            if len(subsample_filepaths_list) == 0:  # no audio or video, just write metadata
                 metadata["status"] = "success"
                 shard_sample_writer.write(
                     {},
@@ -210,20 +214,20 @@ def process_sample(
                     metadata,
                 )
                 return
-            for subsampled_filepaths, subsampled_metadata in zip(subsampled_filepaths_list, metadatas):
-                subsampled_metadata["status"] = "success"
+            for subsample_filepaths, subsample_metadata in zip(subsample_filepaths_list, subsample_metadatas):
+                subsample_metadata["status"] = "success"
                 text_caption = caption
                 if captions_are_subtitles:
-                    clip_subtitles = subsampled_metadata.get("clip_subtitles")
+                    clip_subtitles = subsample_metadata.get("clip_subtitles")
                     first_clip_subtitles = clip_subtitles[0] if clip_subtitles else None
                     subtitle_lines = first_clip_subtitles["lines"] if first_clip_subtitles else None
                     text_caption = subtitle_lines[0] if subtitle_lines else text_caption
                 shard_sample_writer.write(
                     # TODO: read filepath and extract stream
-                    subsampled_stream,
-                    subsampled_metadata["key"],
+                    subsample_stream,
+                    subsample_metadata["key"],
                     text_caption,
-                    subsampled_metadata,
+                    subsample_metadata,
                 )
     except Exception as err:  # pylint: disable=broad-except
         print(err)
