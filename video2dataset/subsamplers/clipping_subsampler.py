@@ -6,11 +6,10 @@ import datetime
 import ffmpeg
 import glob
 import os
-import tempfile
-from typing import Any, List, Tuple, Dict, Literal, Union, Optional, cast
+from typing import List, Tuple, Literal, Union, Optional
 
 from video2dataset.subsamplers.subsampler import Subsampler
-from video2dataset.types import EncodeFormats, Streams, Metadata, Error
+from video2dataset.types import EncodeFormats, Metadata, Error, TempFilepaths
 
 
 ################################
@@ -191,38 +190,14 @@ def _get_clip_metadatas(
 ###############
 
 
-def _process_stream(
-    tmpdir: Any,  # BytesPath
-    stream_bytes: bytes,
-    encode_format: str,
-    ffmpeg_kwargs: dict,
-) -> List[str]:
-    """Processes a stream into clips using ffmpeg"""
-    # TODO: we need to put the extension into the metadata
-    # TODO: This can be done better using pipes I just don't feel like sinking too much time into this rn
-    with open(os.path.join(tmpdir, f"input.{encode_format}"), "wb") as f:
-        f.write(stream_bytes)
-    try:
-        (
-            ffmpeg.input(f"{tmpdir}/input.{encode_format}")
-            .output(f"{tmpdir}/clip_%d.{encode_format}", **ffmpeg_kwargs)
-            .run(capture_stdout=True, quiet=True)
-        )
-    except Exception as err:  # pylint: disable=broad-except
-        raise err
-    stream_clips = glob.glob(f"{tmpdir}/clip*.{encode_format}")
-    stream_clips.sort(key=lambda x: int(x.split("_")[-1].split(".")[0]))
-    return stream_clips
-
-
 def _get_clips(
-    streams: Streams,
+    filepaths: TempFilepaths,
     encode_formats: EncodeFormats,
     precision: str,
     clip_times: str,
     clip_idxs: List[int],
-) -> Streams:
-    """Gets clips from streams"""
+) -> TempFilepaths:
+    """Gets clips from video filepath"""
     ffmpeg_kwargs = {
         "map": 0,
         "f": "segment",
@@ -234,30 +209,22 @@ def _get_clips(
     else:
         ffmpeg_kwargs["c"] = "copy"
 
-    clips: Streams = {}
-    for k in streams.keys():
-        k = cast(Literal["audio", "video"], k)
-        with tempfile.TemporaryDirectory() as tmpdir:
-            stream_bytes = streams[k][0]  # pre-broadcast so only one
-            if stream_bytes is None:
-                continue
-            try:
-                stream_clips = _process_stream(
-                    tmpdir=tmpdir,
-                    stream_bytes=stream_bytes,
-                    encode_format=encode_formats[k],
-                    ffmpeg_kwargs=ffmpeg_kwargs,
-                )
-            except Exception as err:  # pylint: disable=broad-except
-                raise err
+    clip_filepaths: TempFilepaths = {}
+    for k in filepaths:
+        modal_filepath = filepaths[k][0]  # pre-broadcast so only one
+        tmpdir = os.path.dirname(modal_filepath)
+        try:
+            (
+                ffmpeg.input(modal_filepath)
+                .output(f"{tmpdir}/clip_%d.{encode_formats[k]}", **ffmpeg_kwargs)
+                .run(capture_stdout=True, quiet=True)
+            )
+            clip_filepaths[k] = glob.glob(f"{tmpdir}/clip*.{encode_formats[k]}")
+            clip_filepaths[k].sort(key=lambda x: int(x.split("_")[-1].split(".")[0]))[clip_idxs]
+        except Exception as err:  # pylint: disable=broad-except
+            raise err
 
-            clips[k] = []
-            for clip_idx in clip_idxs:
-                with open(stream_clips[clip_idx], "rb") as vid_f:
-                    clip_bytes = vid_f.read()
-                    clips[k].append(clip_bytes)
-
-    return clips
+    return clip_filepaths
 
 
 class ClippingSubsampler(Subsampler):
@@ -305,7 +272,7 @@ class ClippingSubsampler(Subsampler):
         self.max_length_strategy = max_length_strategy
         self.precision = precision
 
-    def __call__(self, streams: Streams, metadata: Metadata) -> Tuple[Streams, List[Metadata], Error]:
+    def __call__(self, filepaths: TempFilepaths, metadata: Metadata) -> Tuple[TempFilepaths, List[Metadata], Error]:
         original_clip_spans = metadata.pop("clips")
 
         clip_spans, clip_times, clip_idxs = _get_clip_splitting_data(
@@ -334,8 +301,8 @@ class ClippingSubsampler(Subsampler):
                 oom_clip_count=self.oom_clip_count,
                 strtime_formatting=isinstance(original_clip_spans[0][0], str),
             )
-            clips = _get_clips(
-                streams=streams,
+            clip_filepaths = _get_clips(
+                filepaths=filepaths,
                 encode_formats=self.encode_formats,
                 precision=self.precision,
                 clip_times=clip_times,
@@ -344,4 +311,4 @@ class ClippingSubsampler(Subsampler):
         except Exception as err:  # pylint: disable=broad-except
             return {}, [], str(err)
 
-        return clips, clip_metadatas, None
+        return clip_filepaths, clip_metadatas, None

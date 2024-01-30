@@ -159,21 +159,21 @@ def process_sample(
     try:
         with tempfile.TemporaryDirectory() as tmpdir:
             # save temp stream dumps
-            temp_filepaths: TempFilepaths = {}
+            filepaths: TempFilepaths = {}
             for modality in streams:
                 modality = cast(Literal["video", "audio"], modality)
-                temp_filepaths[modality] = []
+                filepaths[modality] = []
                 for stream in streams[modality]:
                     stream_uuid = str(uuid.uuid4())
                     temp_filepath = os.path.join(tmpdir, stream_uuid)
                     with open(temp_filepath, "wb") as f:
                         f.write(stream)
-                    temp_filepaths[modality].append(temp_filepath)
+                    filepaths[modality].append(temp_filepath)
 
             # this is pre-broadcast, so there should only be one video
-            assert "video" in temp_filepaths
-            assert len(temp_filepaths["video"]) == 1
-            video_filepath = temp_filepaths["video"][0]
+            assert "video" in filepaths
+            assert len(filepaths["video"]) == 1
+            video_filepath = filepaths["video"][0]
 
             # add info about keyframes and cuts
             metadata = extract_video_metadata(
@@ -184,47 +184,47 @@ def process_sample(
                 captions_are_subtitles=captions_are_subtitles,
             )
 
-        # 1 video -> many videos (either clipping or noop which does identity broadcasting)
-        subsampled_streams, metadatas, shard_status.error_message = subsamplers.broadcast_subsampler(streams, metadata)
-        if shard_status.error_message is not None:
-            metadata["clips"] = []
-            assert False
+            # 1 video -> many videos (either clipping or noop which does identity broadcasting)
+            subsampled_filepaths, metadatas, shard_status.error_message = subsamplers.broadcast_subsampler(filepaths, metadata)
+            if shard_status.error_message is not None:
+                metadata["clips"] = []
+                assert False
 
-        for modality in list(subsampled_streams.keys()):
-            for modality_subsampler in subsamplers.modal_subsamplers[modality]:
-                subsampled_streams, metadatas, shard_status.error_message = modality_subsampler(
-                    subsampled_streams, metadatas
+            for modality in list(subsampled_filepaths.keys()):
+                for modality_subsampler in subsamplers.modal_subsamplers[modality]:
+                    subsampled_filepaths, metadatas, shard_status.error_message = modality_subsampler(
+                        subsampled_filepaths, metadatas
+                    )
+                    assert shard_status.error_message is None
+
+            shard_status.successes += 1
+            shard_status.status_dict.increment("success")
+
+            subsampled_filepaths_list = [dict(zip(subsampled_filepaths, s)) for s in zip(*subsampled_filepaths.values())]
+            if len(subsampled_filepaths_list) == 0:  # no audio or video, just write metadata
+                metadata["status"] = "success"
+                shard_sample_writer.write(
+                    {},
+                    key,
+                    caption,
+                    metadata,
                 )
-                assert shard_status.error_message is None
-
-        shard_status.successes += 1
-        status = "success"
-        shard_status.status_dict.increment(status)
-
-        subsampled_streams_list = [dict(zip(subsampled_streams, s)) for s in zip(*subsampled_streams.values())]
-        if len(subsampled_streams_list) == 0:  # no audio or video, just write metadata
-            metadata["status"] = status
-            shard_sample_writer.write(
-                {},
-                key,
-                caption,
-                metadata,
-            )
-            return
-        for subsampled_streams, subsampled_metadata in zip(subsampled_streams_list, metadatas):
-            subsampled_metadata["status"] = status
-            text_caption = caption
-            if captions_are_subtitles:
-                clip_subtitles = subsampled_metadata.get("clip_subtitles")
-                first_clip_subtitles = clip_subtitles[0] if clip_subtitles else None
-                subtitle_lines = first_clip_subtitles["lines"] if first_clip_subtitles else None
-                text_caption = subtitle_lines[0] if subtitle_lines else text_caption
-            shard_sample_writer.write(
-                subsampled_streams,
-                subsampled_metadata["key"],
-                text_caption,
-                subsampled_metadata,
-            )
+                return
+            for subsampled_filepaths, subsampled_metadata in zip(subsampled_filepaths_list, metadatas):
+                subsampled_metadata["status"] = "success"
+                text_caption = caption
+                if captions_are_subtitles:
+                    clip_subtitles = subsampled_metadata.get("clip_subtitles")
+                    first_clip_subtitles = clip_subtitles[0] if clip_subtitles else None
+                    subtitle_lines = first_clip_subtitles["lines"] if first_clip_subtitles else None
+                    text_caption = subtitle_lines[0] if subtitle_lines else text_caption
+                shard_sample_writer.write(
+                    # TODO: read filepath and extract stream
+                    subsampled_stream,
+                    subsampled_metadata["key"],
+                    text_caption,
+                    subsampled_metadata,
+                )
     except Exception as err:  # pylint: disable=broad-except
         print(err)
         shard_status.failed["failed_to_subsample"] += 1
