@@ -148,7 +148,9 @@ class VideoCaptioner:
         return generated_text
 
 
-class CaptionSubsampler(Subsampler):
+# TODO: use Subsampler call signature, taking and returning FFmpegStream
+# class CaptionSubsampler(Subsampler):
+class CaptionSubsampler:
     """A class to generate synthetic text caption from video frames."""
 
     def __init__(

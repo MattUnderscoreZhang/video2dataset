@@ -9,7 +9,7 @@ from typing import cast
 
 from video2dataset.data_reader import VideoDataReader
 from video2dataset.logger import write_stats
-from video2dataset.workers.worker import ShardStatus, Streams, get_subsamplers, process_sample
+from video2dataset.workers.worker import ShardStatus, ByteStreams, get_subsamplers, process_sample
 
 
 def compute_key(key, shard_id, oom_sample_per_shard, oom_shard_count):
@@ -115,7 +115,7 @@ class DownloadWorker:
         data_reader_call_param_generator = data_generator()
 
         with ThreadPool(self.config["distribution"]["thread_count"]) as thread_pool:
-            for key, streams, yt_meta_dict, shard_status.error_message in thread_pool.imap_unordered(
+            for key, byte_streams, yt_meta_dict, shard_status.error_message in thread_pool.imap_unordered(
                 self.data_reader,  # pylint: disable=(unnecessary-lambda)
                 data_reader_call_param_generator,
             ):
@@ -156,15 +156,15 @@ class DownloadWorker:
                     )
                     return
 
-                for stream in streams.values():
+                for stream in byte_streams.values():
                     shard_status.bytes_downloaded += len(stream)
-                for modality in streams:
-                    streams[modality] = [streams[modality]]
+                for modality in byte_streams:
+                    byte_streams[modality] = byte_streams[modality]
 
                 process_sample(
                     subsamplers=self.subsamplers,
                     shard_status=shard_status,
-                    streams=cast(Streams, streams),
+                    byte_streams=cast(ByteStreams, byte_streams),
                     key=str_key,
                     caption=cast(str, caption),
                     metadata=metadata,

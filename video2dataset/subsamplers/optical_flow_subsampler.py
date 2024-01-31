@@ -209,7 +209,9 @@ class Cv2Detector:
         )
 
 
-class OpticalFlowSubsampler(Subsampler):
+# TODO: use Subsampler call signature, taking and returning FFmpegStream
+# class OpticalFlowSubsampler(Subsampler):
+class OpticalFlowSubsampler:
     """
     A class to detect optical flow in video frames.
 

@@ -11,7 +11,7 @@ from video2dataset.subsamplers import (
     ClippingSubsampler,
     _convert_time_str_to_float,
     _split_clip_into_segments,
-    Streams,
+    ByteStreams,
     FFProbeSubsampler,
     ResolutionSubsampler,
     FrameSubsampler,
@@ -59,8 +59,8 @@ def test_clipping_subsampler(clips):
         "clips": clips,
     }
 
-    streams: Streams = {"video": [video_bytes], "audio": [audio_bytes]}
-    stream_fragments, meta_fragments, error_message = subsampler(streams, metadata)
+    byte_streams: ByteStreams = {"video": video_bytes, "audio": audio_bytes}
+    stream_fragments, meta_fragments, error_message = subsampler(byte_streams, metadata)
     video_fragments = stream_fragments["video"]
     audio_fragments = stream_fragments["audio"]
     assert error_message is None
@@ -106,8 +106,8 @@ def test_resolution_subsampler_video_size(size, resize_mode):
 
     subsampler = ResolutionSubsampler(video_size=size, resize_mode=resize_mode)
 
-    streams = {"video": [video_bytes]}
-    subsampled_streams, _, error_message = subsampler(streams)
+    byte_streams = {"video": video_bytes}
+    subsampled_streams, _, error_message = subsampler(byte_streams)
     assert error_message is None
     subsampled_videos = subsampled_streams["video"]
 
@@ -135,8 +135,8 @@ def test_resolution_subsampler_height_and_width(height, width, resize_mode):
 
     subsampler = ResolutionSubsampler(height=height, width=width, resize_mode=resize_mode)
 
-    streams = {"video": [video_bytes]}
-    subsampled_streams, _, error_message = subsampler(streams)
+    byte_streams = {"video": video_bytes}
+    subsampled_streams, _, error_message = subsampler(byte_streams)
     assert error_message is None
     subsampled_videos = subsampled_streams["video"]
 
@@ -165,8 +165,8 @@ def test_frame_rate_subsampler(target_frame_rate):
 
     subsampler = FrameSubsampler(target_frame_rate)
 
-    streams = {"video": [video_bytes]}
-    subsampled_streams, _, error_message = subsampler(streams)
+    byte_streams = {"video": video_bytes}
+    subsampled_streams, _, error_message = subsampler(byte_streams)
     assert error_message is None
     subsampled_videos = subsampled_streams["video"]
 
@@ -187,10 +187,10 @@ def test_audio_rate_subsampler(sample_rate, n_audio_channels):
     with open(audio, "rb") as aud_f:
         audio_bytes = aud_f.read()
 
-    streams = {"audio": [audio_bytes]}
+    byte_streams = {"audio": audio_bytes}
     subsampler = AudioRateSubsampler(sample_rate, "mp3", n_audio_channels)
 
-    subsampled_streams, _, error_message = subsampler(streams)
+    subsampled_streams, _, error_message = subsampler(byte_streams)
     assert error_message is None
     subsampled_audios = subsampled_streams["audio"]
 
@@ -311,10 +311,10 @@ def test_whisper_subsampler():
         audio_bytes = aud_f.read()
 
     subsampler = WhisperSubsampler("small", 4, "float32")
-    streams = {"audio": [audio_bytes]}
+    byte_streams = {"audio": audio_bytes}
     metadata = [{"key": "000"}]
 
-    _, metadata, error_message = subsampler(streams, metadata)
+    _, metadata, error_message = subsampler(byte_streams, metadata)
     assert error_message is None
     transcript = metadata[0]["whisper_transcript"]
     assert transcript["segments"][0]["text"].startswith(" Bob Jones University in Greenville, South Carolina")

@@ -1,7 +1,7 @@
 """
 frame subsampler adjusts the fps of the videos to some constant value
 """
-from typing import Tuple
+from typing import Tuple, List
 
 from video2dataset.subsamplers.subsampler import Subsampler
 from video2dataset.types import Metadata, Error, FFmpegStream
@@ -20,11 +20,10 @@ class AudioRateSubsampler(Subsampler):
         self.encode_format = encode_format
         self.n_audio_channels = n_audio_channels
 
-    def __call__(self, ffmpeg_streams: List[FFmpegStream], metadatas: List[Metadata]) -> Tuple[List[FFmpegStream], List[Metadata], Error]:
-        ext = self.encode_format
-        # TODO: for now assuming m4a, change this
-        ffmpeg_args = {"ar": str(self.sample_rate), "f": ext}
-        if self.n_audio_channels is not None:
-            ffmpeg_args["ac"] = str(self.n_audio_channels)
-        ffmpeg_stream = ffmpeg_stream.output(f"{tmpdir}/output.{ext}", **ffmpeg_args)
-        return ffmpeg_stream, metadata, None
+    def __call__(self, ffmpeg_stream: FFmpegStream, metadata: Metadata) -> Tuple[List[FFmpegStream], List[Metadata], Error]:
+        ffmpeg_stream = (
+            ffmpeg_stream
+            .afilter("aresample", self.sample_rate)
+            .afilter("aformat", **{"channel_layouts": "mono" if self.n_audio_channels == 1 else "stereo"})
+        )
+        return [ffmpeg_stream], [metadata], None

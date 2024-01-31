@@ -220,8 +220,11 @@ def _get_clips(
                 .output(f"{tmpdir}/clip_%d.{encode_formats[k]}", **ffmpeg_kwargs)
                 .run(capture_stdout=True, quiet=True)
             )
-            clip_ffmpeg_streams[k] = glob.glob(f"{tmpdir}/clip*.{encode_formats[k]}")
-            clip_ffmpeg_streams[k].sort(key=lambda x: int(x.split("_")[-1].split(".")[0]))[segment_idxs]
+            clip_filepaths: List[str] = glob.glob(f"{tmpdir}/clip*.{encode_formats[k]}")
+            clip_filepaths.sort(key=lambda x: int(x.split("_")[-1].split(".")[0]))
+            clip_ff
+            for segment_idx in segment_idxs:
+                output_ffmpeg_stream = ffmpeg.input(clip_filepaths[segment_idx])
         except Exception as err:  # pylint: disable=broad-except
             raise err
 

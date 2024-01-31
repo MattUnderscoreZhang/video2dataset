@@ -9,7 +9,7 @@ import webdataset as wds
 
 from video2dataset.dataloader import get_video_dataset
 from video2dataset.logger import write_stats
-from video2dataset.types import EncodeFormats, Streams
+from video2dataset.types import EncodeFormats, ByteStreams
 from video2dataset.workers.worker import ShardStatus, get_subsamplers, process_sample
 
 
@@ -100,15 +100,15 @@ class SubsetWorker:
                 print(f"Sample {key} failed to download: {err}")
                 return
 
-            streams: Streams = {}
+            byte_streams: ByteStreams = {}
             for modality, encode_format in self.input_encode_formats.items():
                 modality = cast(Literal["audio", "video"], modality)
-                streams[modality] = [sample[encode_format]]
+                byte_streams[modality] = sample[encode_format]
 
             process_sample(
                 subsamplers=self.subsamplers,
                 shard_status=shard_status,
-                streams=streams,
+                byte_streams=byte_streams,
                 key=key,
                 caption=caption,
                 metadata=metadata,

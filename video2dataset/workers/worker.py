@@ -4,7 +4,7 @@ import ffmpeg
 import numpy as np
 import os
 import tempfile
-from typing import Any, List, Tuple, Optional, Literal, cast
+from typing import Any, List, Dict, Tuple, Optional
 import uuid
 
 from video2dataset.logger import CappedCounter
@@ -16,9 +16,8 @@ from video2dataset.subsamplers import (
     NoOpSubsampler,
     ResolutionSubsampler,
     AudioRateSubsampler,
-    Subsampler,
 )
-from video2dataset.types import EncodeFormats, Streams, Metadata, TempFilepaths
+from video2dataset.types import EncodeFormats, ByteStreams, Metadata, FFmpegStream
 
 
 @dataclass
@@ -29,7 +28,6 @@ class Subsamplers:
     modal_subsamplers: dict = field(default_factory=dict)
     cut_detection_subsampler: Optional[CutDetectionSubsampler] = None
     cuts_are_clips: bool = False
-    broadcast_subsampler: Subsampler = field(default_factory=NoOpSubsampler)
 
 
 def get_subsamplers(
@@ -53,18 +51,19 @@ def get_subsamplers(
             cut_detection_subsampler = CutDetectionSubsampler(**config["subsampling"]["CutDetectionSubsampler"]["args"])
         cuts_are_clips = config["subsampling"]["CutDetectionSubsampler"].get("cuts_are_clips", False)
 
+    ffprobe_subsampler = None
+    if "FFProbeSubsampler" in config["subsampling"] or need_keyframes:
+        ffprobe_subsampler = FFProbeSubsampler(**config["subsampling"].get("FFProbeSubsampler", {"args": {}})["args"])
+        ffprobe_subsampler.extract_keyframes |= need_keyframes
+
     broadcast_subsampler = (
         clipping_subsampler
         if (do_clipping or config["storage"]["captions_are_subtitles"] or cuts_are_clips)
         else NoOpSubsampler()
     )
 
-    ffprobe_subsampler = None
-    if "FFProbeSubsampler" in config["subsampling"] or need_keyframes:
-        ffprobe_subsampler = FFProbeSubsampler(**config["subsampling"].get("FFProbeSubsampler", {"args": {}})["args"])
-        ffprobe_subsampler.extract_keyframes |= need_keyframes
-
     video_subsamplers: List[Any] = []
+    video_subsamplers.append(broadcast_subsampler)
     if "ResolutionSubsampler" in config["subsampling"]:
         video_subsamplers.append(ResolutionSubsampler(**config["subsampling"]["ResolutionSubsampler"]["args"]))
     if "FrameSubsampler" in config["subsampling"]:
@@ -95,7 +94,6 @@ def get_subsamplers(
             modal_subsamplers=modal_subsamplers,
             cut_detection_subsampler=cut_detection_subsampler,
             cuts_are_clips=cuts_are_clips,
-            broadcast_subsampler=broadcast_subsampler,
         ),
         output_encode_formats,
     )
@@ -148,7 +146,7 @@ def extract_video_metadata(
 def process_sample(
     subsamplers: Subsamplers,
     shard_status: ShardStatus,
-    streams: Streams,
+    byte_streams: ByteStreams,
     key: str,
     caption: str,
     metadata: Metadata,
@@ -156,55 +154,69 @@ def process_sample(
     shard_sample_writer: Any,  # TODO: type correctly
 ):
     """Process a single video"""
+    # TODO: don't split video into different modalities before passing to this function
+    # it's completely unnecessary and makes the code slower and more complex
+    # you can extract and process audio and video portions of ffmpeg_stream on the fly as needed
     try:
         with tempfile.TemporaryDirectory() as tmpdir:
-            # save temp stream dumps
-            filepaths: TempFilepaths = {}
-            for modality in streams:
-                modality = cast(Literal["video", "audio"], modality)
-                filepaths[modality] = []
-                for stream in streams[modality]:
-                    stream_uuid = str(uuid.uuid4())
-                    temp_filepath = os.path.join(tmpdir, stream_uuid)
-                    with open(temp_filepath, "wb") as f:
-                        f.write(stream)
-                    filepaths[modality].append(temp_filepath)
+            # temporarily dump streams to file
+            # TODO: don't have the dataloader read these streams to memory in the first place
+            filepaths: Dict[str, str] = {}
+            for modality in byte_streams:
+                stream_uuid = str(uuid.uuid4())
+                temp_filepath = os.path.join(tmpdir, stream_uuid)
+                with open(temp_filepath, "wb") as f:
+                    f.write(byte_streams[modality])
+                filepaths[modality] = temp_filepath
 
-            # add info to video metadata about keyframes and cuts
-            # this is pre-broadcast, so there should only be one video
-            assert "video" in filepaths
-            assert len(filepaths["video"]) == 1
-            video_filepath = filepaths["video"][0]
-            metadata = extract_video_metadata(
-                subsamplers=subsamplers,
-                shard_status=shard_status,
-                metadata=metadata,
-                video_filepath=video_filepath,
-                captions_are_subtitles=captions_are_subtitles,
-            )
+            # extract video metadata about keyframes and cuts
+            if "video" in filepaths:
+                metadata = extract_video_metadata(
+                    subsamplers=subsamplers,
+                    shard_status=shard_status,
+                    metadata=metadata,
+                    video_filepath=filepaths["video"],
+                    captions_are_subtitles=captions_are_subtitles,
+                )
 
-            # 1 video -> many videos (either clipping or noop which does identity broadcasting)
-            subsample_filepaths, subsample_metadatas, shard_status.error_message = subsamplers.broadcast_subsampler(filepaths, metadata)
-            if shard_status.error_message is not None:
-                metadata["clips"] = []
-                assert False
+            # create input ffmpeg streams and metadatas - start with single-element lists to represent one input
+            ffmpeg_streams: Dict[str, List[FFmpegStream]] = {}
+            for modality in filepaths:
+                ffmpeg_streams[modality] = [ffmpeg.input(filepaths[modality])]
+            metadatas = [metadata]
 
-            # create ffmpeg process for each file, then run to generate output file
-            for modality in list(subsample_filepaths.keys()):
-                for subsample_filepath, subsample_metadata in zip(subsample_filepaths[modality], subsample_metadatas):
-                    ffmpeg_stream = ffmpeg.input(subsample_filepath)
-                    for modality_subsampler in subsamplers.modal_subsamplers[modality]:
-                        ffmpeg_stream, subsample_metadata, shard_status.error_message = modality_subsampler(
-                            ffmpeg_stream, subsample_metadata, tmpdir,
+            # chain ffmpeg streams
+            for modality in filepaths:
+                # each subsampler operates on one input stream and can generate one or more output streams
+                for modality_subsampler in subsamplers.modal_subsamplers[modality]:
+                    # TODO: use a datastructure to combine stream modes and metadata, instead of matching list indices
+                    output_ffmpeg_streams = []
+                    output_metadatas = []
+                    # TODO: don't use metadata keys to share information across subsamplers, it's crazy
+                    for ffmpeg_stream, metadata in zip(ffmpeg_streams[modality], metadatas):
+                        clip_ffmpeg_streams, clip_metadatas, shard_status.error_message = modality_subsampler(
+                            ffmpeg_stream, metadata, tmpdir,
                         )
                         assert shard_status.error_message is None
+                        output_ffmpeg_streams += clip_ffmpeg_streams
+                        output_metadatas += clip_metadatas
+                    ffmpeg_streams[modality] = output_ffmpeg_streams
+                    metadatas = output_metadatas
+
+            # run all streams to produce outputs
+            for modality in ffmpeg_streams:
+                for ffmpeg_stream in ffmpeg_streams[modality]:
                     ffmpeg_stream.run(capture_stdout=True, quiet=True)
 
+            # note success, write dataset, update results
             shard_status.successes += 1
             shard_status.status_dict.increment("success")
 
-            subsample_filepaths_list = [dict(zip(subsample_filepaths, s)) for s in zip(*subsample_filepaths.values())]
-            if len(subsample_filepaths_list) == 0:  # no audio or video, just write metadata
+            output_byte_streams_list = [
+                dict(zip(output_byte_streams, s))
+                for s in zip(*output_byte_streams.values())
+            ]
+            if len(output_byte_streams_list) == 0:  # no audio or video, just write metadata
                 metadata["status"] = "success"
                 shard_sample_writer.write(
                     {},
@@ -213,20 +225,19 @@ def process_sample(
                     metadata,
                 )
                 return
-            for subsample_filepaths, subsample_metadata in zip(subsample_filepaths_list, subsample_metadatas):
-                subsample_metadata["status"] = "success"
+            for output_byte_streams, metadata in zip(output_byte_streams_list, metadatas):
+                metadata["status"] = "success"
                 text_caption = caption
                 if captions_are_subtitles:
-                    clip_subtitles = subsample_metadata.get("clip_subtitles")
+                    clip_subtitles = metadata.get("clip_subtitles")
                     first_clip_subtitles = clip_subtitles[0] if clip_subtitles else None
                     subtitle_lines = first_clip_subtitles["lines"] if first_clip_subtitles else None
                     text_caption = subtitle_lines[0] if subtitle_lines else text_caption
                 shard_sample_writer.write(
-                    # TODO: read filepath and extract stream
-                    subsample_stream,
-                    subsample_metadata["key"],
+                    output_byte_streams,
+                    metadata["key"],
                     text_caption,
-                    subsample_metadata,
+                    metadata,
                 )
     except Exception as err:  # pylint: disable=broad-except
         print(err)

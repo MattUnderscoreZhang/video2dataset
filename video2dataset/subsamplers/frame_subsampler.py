@@ -37,7 +37,7 @@ class FrameSubsampler(Subsampler):
             encode_format = "mp4" if downsample_method == "fps" else "jpg"
         self.encode_format = encode_format
 
-    def __call__(self, ffmpeg_streams: List[FFmpegStream], metadatas: List[Metadata]) -> Tuple[List[FFmpegStream], List[Metadata], Error]:
+    def __call__(self, ffmpeg_stream: FFmpegStream, metadata: Metadata) -> Tuple[List[FFmpegStream], List[Metadata], Error]:
         if self.downsample_method == "fps":
             ffmpeg_stream = (
                 ffmpeg_stream
@@ -68,5 +68,5 @@ class FrameSubsampler(Subsampler):
                 ffmpeg_stream = frame_ffmpeg_streams
                 metadata = frame_metadatas
             except Exception as err:  # pylint: disable=broad-except
-                return {}, [], err
-        return ffmpeg_stream, metadata, None
+                return [], [], str(err)
+        return [ffmpeg_stream], [metadata], None

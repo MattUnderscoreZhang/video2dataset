@@ -16,7 +16,9 @@ except:  # pylint: disable=broad-except,bare-except
 from .subsampler import Subsampler
 
 
-class WhisperSubsampler(Subsampler):
+# TODO: use Subsampler call signature, taking and returning FFmpegStream
+# class WhisperSubsampler(Subsampler):
+class WhisperSubsampler:
     """
     Transcribes audio samples using the OAI Whisper Model via WhisperX API
 
