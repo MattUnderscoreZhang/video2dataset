@@ -234,7 +234,7 @@ def process_sample(
                     subtitle_lines = first_clip_subtitles["lines"] if first_clip_subtitles else None
                     text_caption = subtitle_lines[0] if subtitle_lines else text_caption
                 shard_sample_writer.write(
-                    output_byte_streams,
+                    output_byte_streams,  # TODO: writer expects {modality: byte_stream}
                     metadata["key"],
                     text_caption,
                     metadata,

@@ -214,19 +214,16 @@ def _get_clips(
     for k in ffmpeg_stream:
         modal_filepath = ffmpeg_stream[k][0]  # pre-broadcast so only one
         tmpdir = os.path.dirname(modal_filepath)
-        try:
-            (
-                ffmpeg.input(modal_filepath)
-                .output(f"{tmpdir}/clip_%d.{encode_formats[k]}", **ffmpeg_kwargs)
-                .run(capture_stdout=True, quiet=True)
-            )
-            clip_filepaths: List[str] = glob.glob(f"{tmpdir}/clip*.{encode_formats[k]}")
-            clip_filepaths.sort(key=lambda x: int(x.split("_")[-1].split(".")[0]))
-            clip_ff
-            for segment_idx in segment_idxs:
-                output_ffmpeg_stream = ffmpeg.input(clip_filepaths[segment_idx])
-        except Exception as err:  # pylint: disable=broad-except
-            raise err
+        (
+            ffmpeg.input(modal_filepath)
+            .output(f"{tmpdir}/clip_%d.{encode_formats[k]}", **ffmpeg_kwargs)
+            .run(capture_stdout=True, quiet=True)
+        )
+        clip_filepaths: List[str] = glob.glob(f"{tmpdir}/clip*.{encode_formats[k]}")
+        clip_filepaths.sort(key=lambda x: int(x.split("_")[-1].split(".")[0]))
+        clip_ff
+        for segment_idx in segment_idxs:
+            output_ffmpeg_stream = ffmpeg.input(clip_filepaths[segment_idx])
 
     return clip_ffmpeg_streams
 
