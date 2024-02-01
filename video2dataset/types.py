@@ -22,13 +22,13 @@ Error = Optional[str]
 
 # this is here because ffmpeg objects aren't type annotated correctly
 class FFmpegStream(FilterableStream):
-    def filter(self, *args, **kwargs) -> FFmpegStream:
+    def filter(self, *args, **kwargs) -> 'FFmpegStream':
         ...
 
-    def afilter(self, *args, **kwargs) -> FFmpegStream:
+    def afilter(self, *args, **kwargs) -> 'FFmpegStream':
         ...
 
-    def output(self, *args, **kwargs) -> FFmpegStream:
+    def output(self, *args, **kwargs) -> 'FFmpegStream':
         ...
 
     def run(self, *args, **kwargs) -> None:

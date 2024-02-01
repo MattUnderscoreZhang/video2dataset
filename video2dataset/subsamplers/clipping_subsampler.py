@@ -5,7 +5,6 @@ import copy
 import datetime
 import ffmpeg
 import glob
-import os
 from typing import List, Tuple, Literal, Union, Optional
 
 from video2dataset.subsamplers.subsampler import Subsampler
@@ -193,10 +192,11 @@ def _get_clip_metadatas(
 
 def _get_clips(
     ffmpeg_stream: FFmpegStream,
-    encode_formats: EncodeFormats,
+    encode_format: str,
     precision: str,
     segment_times_str: str,
     segment_idxs: List[int],
+    tmpdir: str,
 ) -> List[FFmpegStream]:
     """Gets clips from video filepath"""
     ffmpeg_kwargs = {
@@ -211,19 +211,15 @@ def _get_clips(
         ffmpeg_kwargs["c"] = "copy"
 
     clip_ffmpeg_streams: List[FFmpegStream] = []
-    for k in ffmpeg_stream:
-        modal_filepath = ffmpeg_stream[k][0]  # pre-broadcast so only one
-        tmpdir = os.path.dirname(modal_filepath)
-        (
-            ffmpeg.input(modal_filepath)
-            .output(f"{tmpdir}/clip_%d.{encode_formats[k]}", **ffmpeg_kwargs)
-            .run(capture_stdout=True, quiet=True)
-        )
-        clip_filepaths: List[str] = glob.glob(f"{tmpdir}/clip*.{encode_formats[k]}")
-        clip_filepaths.sort(key=lambda x: int(x.split("_")[-1].split(".")[0]))
-        clip_ff
-        for segment_idx in segment_idxs:
-            output_ffmpeg_stream = ffmpeg.input(clip_filepaths[segment_idx])
+    (
+        ffmpeg_stream
+        .output(f"{tmpdir}/clip_%d.{encode_format}", **ffmpeg_kwargs)
+        .run(capture_stdout=True, quiet=True)
+    )
+    clip_filepaths: List[str] = glob.glob(f"{tmpdir}/clip*.{encode_format}")
+    clip_filepaths.sort(key=lambda x: int(x.split("_")[-1].split(".")[0]))
+    for segment_idx in segment_idxs:
+        clip_ffmpeg_streams.append(ffmpeg.input(clip_filepaths[segment_idx]))
 
     return clip_ffmpeg_streams
 
@@ -267,13 +263,14 @@ class ClippingSubsampler(Subsampler):
         assert max_length_strategy in ["all", "first"]
         assert precision in ["exact", "low", "keyframe_adjusted"]
         self.oom_clip_count = oom_clip_count
-        self.encode_formats = encode_formats
+        # TODO: subsampler currently only handles videos
+        self.encode_format = encode_formats["video"]
         self.min_length = min_length
         self.max_length = max_length
         self.max_length_strategy = max_length_strategy
         self.precision = precision
 
-    def __call__(self, ffmpeg_stream: FFmpegStream, metadata: Metadata) -> Tuple[List[FFmpegStream], List[Metadata], Error]:
+    def __call__(self, ffmpeg_stream: FFmpegStream, metadata: Metadata, tmpdir: str) -> Tuple[List[FFmpegStream], List[Metadata], Error]:
         original_clips = metadata.pop("clips")
 
         clips, segment_times_str, segment_idxs = _get_clip_splitting_data(
@@ -304,10 +301,11 @@ class ClippingSubsampler(Subsampler):
             )
             output_ffmpeg_streams = _get_clips(
                 ffmpeg_stream=ffmpeg_stream,
-                encode_formats=self.encode_formats,
+                encode_format=self.encode_format,
                 precision=self.precision,
                 segment_times_str=segment_times_str,
                 segment_idxs=segment_idxs,
+                tmpdir=tmpdir,
             )
         except Exception as err:  # pylint: disable=broad-except
             return [], [], str(err)

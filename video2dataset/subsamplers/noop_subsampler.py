@@ -9,5 +9,5 @@ class NoOpSubsampler(Subsampler):
     def __init__(self):
         pass
 
-    def __call__(self, ffmpeg_stream: FFmpegStream, metadata: Metadata) -> Tuple[List[FFmpegStream], List[Metadata], Error]:
+    def __call__(self, ffmpeg_stream: FFmpegStream, metadata: Metadata, tmpdir: str) -> Tuple[List[FFmpegStream], List[Metadata], Error]:
         return [ffmpeg_stream], [metadata], None

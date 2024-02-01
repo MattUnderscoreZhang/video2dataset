@@ -20,7 +20,7 @@ class AudioRateSubsampler(Subsampler):
         self.encode_format = encode_format
         self.n_audio_channels = n_audio_channels
 
-    def __call__(self, ffmpeg_stream: FFmpegStream, metadata: Metadata) -> Tuple[List[FFmpegStream], List[Metadata], Error]:
+    def __call__(self, ffmpeg_stream: FFmpegStream, metadata: Metadata, tmpdir: str) -> Tuple[List[FFmpegStream], List[Metadata], Error]:
         ffmpeg_stream = (
             ffmpeg_stream
             .afilter("aresample", self.sample_rate)

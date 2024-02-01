@@ -37,36 +37,36 @@ class FrameSubsampler(Subsampler):
             encode_format = "mp4" if downsample_method == "fps" else "jpg"
         self.encode_format = encode_format
 
-    def __call__(self, ffmpeg_stream: FFmpegStream, metadata: Metadata) -> Tuple[List[FFmpegStream], List[Metadata], Error]:
+    def __call__(self, ffmpeg_stream: FFmpegStream, metadata: Metadata, tmpdir: str) -> Tuple[List[FFmpegStream], List[Metadata], Error]:
+        ffmpeg_streams = [ffmpeg_stream]
+        metadatas = [metadata]
         if self.downsample_method == "fps":
-            ffmpeg_stream = (
+            ffmpeg_streams = [
                 ffmpeg_stream
                 .filter("fps", fps=self.frame_rate)
-                .output(f"{tmpdir}/output.{self.encode_format}", reset_timestamps=1)
-            )
+                .output(f"{tmpdir}/output.{self.encode_format}")
+            ]
         elif "frame" in self.downsample_method:
-            ffmpeg_stream = (
+            ffmpeg_streams = [
                 ffmpeg_stream
                 .filter("select", "eq(n,0)")
                 .output(f"{tmpdir}/output.{self.encode_format}")
-            )
+            ]
         elif self.downsample_method == "yt_subtitle":
+            ffmpeg_streams: List[FFmpegStream] = []
+            metadatas: List[Metadata] = []
             try:
                 subtitles = metadata["yt_meta_dict"]["subtitles"]
-                frame_ffmpeg_streams: List[FFmpegStream] = []
-                frame_metadatas: List[Metadata] = []
                 for frame_id, frame_subtitles in enumerate(subtitles):
                     frame_metadata = copy.deepcopy(metadata)
                     frame_metadata["frame_time"] = frame_subtitles["start"]
                     frame_metadata["frame_subtitle"] = frame_subtitles["lines"]
                     frame_metadata["key"] = f"{frame_metadata['key']}_{frame_id:04d}"
-                    frame_metadatas.append(frame_metadata)
-                    frame_ffmpeg_streams.append(
+                    metadatas.append(frame_metadata)
+                    ffmpeg_streams.append(
                         ffmpeg_stream
-                        .output(f"{tmpdir}/frame_{frame_id}.jpg", vframes=1, **{"q:v": 2})
+                        .output(f"{tmpdir}/output_frame_{frame_id}.jpg", vframes=1, **{"q:v": 2})
                     )
-                ffmpeg_stream = frame_ffmpeg_streams
-                metadata = frame_metadatas
             except Exception as err:  # pylint: disable=broad-except
                 return [], [], str(err)
-        return [ffmpeg_stream], [metadata], None
+        return ffmpeg_streams, metadatas, None

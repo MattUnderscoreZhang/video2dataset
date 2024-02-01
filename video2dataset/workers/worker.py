@@ -1,6 +1,7 @@
 """Standard worker for video2dataset."""
 from dataclasses import dataclass, field
 import ffmpeg
+import glob
 import numpy as np
 import os
 import tempfile
@@ -203,19 +204,29 @@ def process_sample(
                     ffmpeg_streams[modality] = output_ffmpeg_streams
                     metadatas = output_metadatas
 
-            # run all streams to produce outputs
+            # run all streams and output bytestreams of all results
+            output_byte_streams: ByteStreams = {}
             for modality in ffmpeg_streams:
                 for ffmpeg_stream in ffmpeg_streams[modality]:
                     ffmpeg_stream.run(capture_stdout=True, quiet=True)
+                output_filepaths = glob.glob(f"{tmpdir}/output*")
+                output_byte_streams[modality] = []
+                for output_filepath in output_filepaths:
+                    with open(output_filepath, "rb") as f:
+                        output_byte_streams[modality].append(f.read())
 
-            # note success, write dataset, update results
+            # note success
             shard_status.successes += 1
             shard_status.status_dict.increment("success")
 
-            output_byte_streams_list = [
-                dict(zip(output_byte_streams, s))
-                for s in zip(*output_byte_streams.values())
+            # group modalities by index
+            print("done", len(output_byte_streams["video"]))
+            output_byte_streams_list: List[ByteStreams] = [
+                dict(zip(output_byte_streams, values))
+                for values in zip(*output_byte_streams.values())
             ]
+
+            # write output dataset and update status
             if len(output_byte_streams_list) == 0:  # no audio or video, just write metadata
                 metadata["status"] = "success"
                 shard_sample_writer.write(

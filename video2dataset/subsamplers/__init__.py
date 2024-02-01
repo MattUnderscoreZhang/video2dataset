@@ -4,7 +4,7 @@ Transform video and audio by reducing fps, extracting videos, changing resolutio
 
 from .audio_rate_subsampler import AudioRateSubsampler
 from .caption_subsampler import CaptionSubsampler
-from .clipping_subsampler import ClippingSubsampler, _convert_time_str_to_float, _split_clip_into_segments, ByteStreams
+from .clipping_subsampler import ClippingSubsampler, _convert_time_str_to_float, _split_clip_into_segments
 from .cut_detection_subsampler import CutDetectionSubsampler
 from .ffprobe_subsampler import FFProbeSubsampler
 from .frame_subsampler import FrameSubsampler

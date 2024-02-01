@@ -9,7 +9,7 @@ class Subsampler:
     """Subsamples input and returns in same format (stream dict + metadata)"""
 
     @abstractmethod
-    def __call__(self, ffmpeg_stream: FFmpegStream, metadata: Metadata) -> Tuple[List[FFmpegStream], List[Metadata], Error]:
+    def __call__(self, ffmpeg_stream: FFmpegStream, metadata: Metadata, tmpdir: str) -> Tuple[List[FFmpegStream], List[Metadata], Error]:
         raise NotImplementedError("Subsampler should not be called")
 
 
